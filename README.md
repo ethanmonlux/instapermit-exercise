@@ -38,7 +38,7 @@ python scraper.py --query "headphones"  # custom query
       "price": "...",
       "rating": "...",
       "url": "...",
-      "category": "budget | mid-range | gaming | professional",
+      "category": "AI-inferred category (e.g. budget, gaming, fiction, non-fiction)",
       "sentiment": "one sentence describing the product's appeal"
     }
   ]
