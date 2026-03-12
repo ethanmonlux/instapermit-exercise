@@ -18,7 +18,8 @@ Single file: scraper.py. Submit via GitHub repo link.
 - Fail-open on LLM enrichment: scrape succeeds even if categorization fails — degraded is better than nothing
 - Explicit waits only — never use time.sleep()
 - Always close browser in finally block — no resource leaks
-- Attempt Amazon twice before falling back to FakeStore
+- Fallback chain: Amazon (x2) → books.toscrape.com → FakeStore API
+- Dynamic selector recovery: if Amazon returns no cards, ask Claude for the right selector before giving up
 - Handle empty results explicitly — never let None propagate silently
 
 ## Code Style
@@ -29,10 +30,12 @@ Single file: scraper.py. Submit via GitHub repo link.
 - Comments explain why, not what
 
 ## Architecture
-- scraper.py — single file, three functions + main()
-  - scrape_amazon() — Selenium, returns list[dict] | None on block/failure
+- scraper.py — single file, five functions + main()
+  - scrape_amazon() — Selenium, returns list[dict] | None on block/failure. Attempts dynamic selector recovery via Claude before giving up.
+  - scrape_books() — Selenium fallback to books.toscrape.com, never blocks
   - scrape_fakestore() — requests fallback, always returns list[dict]
-  - categorize_with_claude() — Anthropic API, Pydantic-validated output
+  - get_selector_from_claude() — sends truncated page HTML to Claude, returns recovered CSS selector or None
+  - categorize_with_claude() — Anthropic API, Pydantic-validated output, adds category + sentiment fields
   - main() — argparse, orchestration, structured JSON output
 
 ## Output Schema
