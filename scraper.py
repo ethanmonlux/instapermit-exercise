@@ -11,6 +11,7 @@ import sys
 from typing import Any
 
 import requests
+from anthropic import Anthropic
 from pydantic import BaseModel, ValidationError
 
 
@@ -22,8 +23,13 @@ class Product(BaseModel):
     category: str | None = None
 
 
-class CategoryList(BaseModel):
-    categories: list[str]
+class ProductEnhancement(BaseModel):
+    category: str
+    sentiment: str
+
+
+class EnhancementList(BaseModel):
+    enhancements: list[ProductEnhancement]
 
 
 def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
@@ -48,6 +54,12 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 
     driver = None
     try:
@@ -165,14 +177,17 @@ def categorize_with_claude(products: list[dict[str, Any]]) -> list[dict[str, Any
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
-    from anthropic import Anthropic
-
     client = Anthropic(api_key=api_key)
     products_json = json.dumps(products, indent=2)
 
-    prompt = f"""Given these products, categorize each one as exactly one of: "budget", "mid-range", "gaming", or "professional".
-Return a JSON array with the same length and order, each element being the category string only.
-Example: ["budget", "mid-range", "gaming", "professional", "budget"]
+    prompt = f"""Given these products, return a JSON array with the same length and order.
+Each element must be an object with exactly two fields:
+- "category": exactly one of "budget", "mid-range", "gaming", or "professional"
+- "sentiment": one sentence describing the product's appeal based on title, price, and rating
+
+Example: [{{"category": "budget", "sentiment": "Affordable option with solid ratings for everyday use."}}]
+
+Return JSON only. No markdown, no preamble.
 
 Products:
 {products_json}"""
@@ -189,16 +204,24 @@ Products:
         start = text.find("[")
         end = text.rfind("]") + 1
         text = text[start:end]
-    try:
-        validated = CategoryList(categories=json.loads(text))
-        categories = validated.categories
-    except (json.JSONDecodeError, ValidationError):
-        categories = ["mid-range"] * len(products)
-
     valid_cats = {"budget", "mid-range", "gaming", "professional"}
-    for i, product in enumerate(products):
-        cat = categories[i] if i < len(categories) else "mid-range"
-        product["category"] = cat if cat in valid_cats else "mid-range"
+    try:
+        raw = json.loads(text)
+        validated = EnhancementList(enhancements=raw)
+        for i, product in enumerate(products):
+            if i < len(validated.enhancements):
+                enh = validated.enhancements[i]
+                product["category"] = (
+                    enh.category if enh.category in valid_cats else "mid-range"
+                )
+                product["sentiment"] = enh.sentiment
+            else:
+                product["category"] = "mid-range"
+                product["sentiment"] = ""
+    except (json.JSONDecodeError, ValidationError):
+        for product in products:
+            product["category"] = "mid-range"
+            product["sentiment"] = ""
 
     return products
 
