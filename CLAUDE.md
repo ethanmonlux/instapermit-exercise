@@ -41,7 +41,7 @@ Single file: scraper.py. Submit via GitHub repo link.
 ## Output Schema
 All output printed as JSON with:
 - status: "ok" | "degraded" | "error"
-- products: list of dicts (title, price, rating, url, category)
+- products: list of dicts (title, price, rating, url, category, sentiment)
 - reason: human-readable message if status != "ok"
 
 ## Pre-commit Checks
