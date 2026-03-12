@@ -74,12 +74,12 @@ def test_categorize_degraded_on_bad_json():
         mock_anthropic.return_value.messages.create.return_value = mock_message
         products = categorize_with_claude([p.copy() for p in MOCK_PRODUCTS])
 
-    # Should not crash — defaults to mid-range
-    assert products[0]["category"] == "mid-range"
-    assert products[1]["category"] == "mid-range"
+    # Should not crash — defaults to uncategorized
+    assert products[0]["category"] == "uncategorized"
+    assert products[1]["category"] == "uncategorized"
 
 
-def test_categorize_invalid_category_defaults_to_midrange():
+def test_categorize_dynamic_categories_pass_through():
     bad_response = json.dumps(
         [
             {"category": "unknown_category", "sentiment": "Some sentiment."},
@@ -93,7 +93,8 @@ def test_categorize_invalid_category_defaults_to_midrange():
         mock_anthropic.return_value.messages.create.return_value = mock_message
         products = categorize_with_claude([p.copy() for p in MOCK_PRODUCTS])
 
-    assert products[0]["category"] == "mid-range"
+    # Categories are open-ended — Claude's category passes through as-is
+    assert products[0]["category"] == "unknown_category"
     assert products[1]["category"] == "budget"
 
 

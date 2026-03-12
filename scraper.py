@@ -325,7 +325,7 @@ def categorize_with_claude(products: list[dict[str, Any]]) -> list[dict[str, Any
 
     prompt = f"""Given these products, return a JSON array with the same length and order.
 Each element must be an object with exactly two fields:
-- "category": exactly one of "budget", "mid-range", "gaming", or "professional"
+- "category": a short category label that best describes this product (e.g. "budget", "gaming", "professional", "fiction", "non-fiction", "thriller", "self-help") — infer the right category from the product itself
 - "sentiment": one sentence describing the product's appeal based on title, price, and rating
 
 Example: [{{"category": "budget", "sentiment": "Affordable option with solid ratings for everyday use."}}]
@@ -347,23 +347,20 @@ Products:
         start = text.find("[")
         end = text.rfind("]") + 1
         text = text[start:end]
-    valid_cats = {"budget", "mid-range", "gaming", "professional"}
     try:
         raw = json.loads(text)
         validated = EnhancementList(enhancements=raw)
         for i, product in enumerate(products):
             if i < len(validated.enhancements):
                 enh = validated.enhancements[i]
-                product["category"] = (
-                    enh.category if enh.category in valid_cats else "mid-range"
-                )
+                product["category"] = enh.category or "uncategorized"
                 product["sentiment"] = enh.sentiment
             else:
-                product["category"] = "mid-range"
+                product["category"] = "uncategorized"
                 product["sentiment"] = ""
     except (json.JSONDecodeError, ValidationError):
         for product in products:
-            product["category"] = "mid-range"
+            product["category"] = "uncategorized"
             product["sentiment"] = ""
 
     return products
