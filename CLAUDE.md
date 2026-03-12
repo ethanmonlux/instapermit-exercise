@@ -18,7 +18,7 @@ Single file: scraper.py. Submit via GitHub repo link.
 - Fail-open on LLM enrichment: scrape succeeds even if categorization fails — degraded is better than nothing
 - Explicit waits only — never use time.sleep()
 - Always close browser in finally block — no resource leaks
-- Fallback chain: Amazon (x2) → books.toscrape.com → FakeStore API
+- Fallback chain: Amazon (x2) → books.toscrape.com (Selenium) → FakeStore API (requests)
 - Dynamic selector recovery: if Amazon returns no cards, ask Claude for the right selector before giving up
 - Handle empty results explicitly — never let None propagate silently
 
