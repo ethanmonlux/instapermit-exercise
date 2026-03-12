@@ -22,14 +22,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class Product(BaseModel):
-    title: str
-    price: str | None = None
-    rating: str | None = None
-    url: str
-    category: str | None = None
-
-
 class ProductEnhancement(BaseModel):
     category: str
     sentiment: str
