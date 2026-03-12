@@ -11,6 +11,19 @@ import sys
 from typing import Any
 
 import requests
+from pydantic import BaseModel, ValidationError
+
+
+class Product(BaseModel):
+    title: str
+    price: str | None = None
+    rating: str | None = None
+    url: str
+    category: str | None = None
+
+
+class CategoryList(BaseModel):
+    categories: list[str]
 
 
 def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
@@ -21,7 +34,6 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
@@ -45,18 +57,27 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
         # Wait for product listings (Amazon uses various selectors; try common ones)
         wait = WebDriverWait(driver, 15)
         wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "[data-component-type='s-search-result']"))
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "[data-component-type='s-search-result']")
+            )
         )
 
         # Get first 5 product cards
-        cards = driver.find_elements(By.CSS_SELECTOR, "[data-component-type='s-search-result']")[:5]
+        cards = driver.find_elements(
+            By.CSS_SELECTOR, "[data-component-type='s-search-result']"
+        )[:5]
 
         if not cards:
             # Maybe blocked or different layout
             return None
 
         for card in cards:
-            product: dict[str, Any] = {"title": "", "price": None, "rating": None, "url": ""}
+            product: dict[str, Any] = {
+                "title": "",
+                "price": None,
+                "rating": None,
+                "url": "",
+            }
 
             try:
                 # Title and URL
@@ -65,7 +86,11 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
                     product["title"] = title_el[0].text.strip()
                     href = title_el[0].get_attribute("href") or ""
                     # Ensure full URL
-                    product["url"] = href if href.startswith("http") else f"https://www.amazon.com{href}"
+                    product["url"] = (
+                        href
+                        if href.startswith("http")
+                        else f"https://www.amazon.com{href}"
+                    )
 
                 # Price
                 price_el = card.find_elements(By.CSS_SELECTOR, ".a-price .a-offscreen")
@@ -74,7 +99,9 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
                     product["price"] = raw.strip()
 
                 # Rating
-                rating_el = card.find_elements(By.CSS_SELECTOR, ".a-icon-star-small .a-icon-alt")
+                rating_el = card.find_elements(
+                    By.CSS_SELECTOR, ".a-icon-star-small .a-icon-alt"
+                )
                 if rating_el:
                     product["rating"] = rating_el[0].get_attribute("textContent")
 
@@ -86,7 +113,11 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
 
         # Check for block indicators (captcha, robot check)
         page_source = driver.page_source.lower()
-        if "robot" in page_source or "captcha" in page_source or "enter the characters" in page_source:
+        if (
+            "robot" in page_source
+            or "captcha" in page_source
+            or "enter the characters" in page_source
+        ):
             return None
 
         return products if products else None
@@ -114,12 +145,14 @@ def scrape_fakestore(query: str) -> list[dict[str, Any]]:
         elif "rating" in item:
             rating = str(item["rating"])
 
-        products.append({
-            "title": item.get("title", ""),
-            "price": str(item.get("price", "")),
-            "rating": rating,
-            "url": f"https://fakestoreapi.com/products/{item.get('id', '')}",
-        })
+        products.append(
+            {
+                "title": item.get("title", ""),
+                "price": str(item.get("price", "")),
+                "rating": rating,
+                "url": f"https://fakestoreapi.com/products/{item.get('id', '')}",
+            }
+        )
     return products
 
 
@@ -145,7 +178,7 @@ Products:
 {products_json}"""
 
     message = client.messages.create(
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5-20251001",
         max_tokens=256,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -156,40 +189,54 @@ Products:
         start = text.find("[")
         end = text.rfind("]") + 1
         text = text[start:end]
-    categories = json.loads(text)
+    try:
+        validated = CategoryList(categories=json.loads(text))
+        categories = validated.categories
+    except (json.JSONDecodeError, ValidationError):
+        categories = ["mid-range"] * len(products)
 
+    valid_cats = {"budget", "mid-range", "gaming", "professional"}
     for i, product in enumerate(products):
         cat = categories[i] if i < len(categories) else "mid-range"
-        if cat not in ("budget", "mid-range", "gaming", "professional"):
-            cat = "mid-range"
-        product["category"] = cat
+        product["category"] = cat if cat in valid_cats else "mid-range"
 
     return products
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrape products and categorize with AI")
-    parser.add_argument("--query", default="laptops", help="Search query for Amazon (default: laptops)")
+    parser = argparse.ArgumentParser(
+        description="Scrape products and categorize with AI"
+    )
+    parser.add_argument(
+        "--query", default="laptops", help="Search query for Amazon (default: laptops)"
+    )
     args = parser.parse_args()
 
-    # Part 1: Scrape products
+    # Attempt Amazon twice before falling back
     products = scrape_amazon(args.query)
+    if products is None:
+        products = scrape_amazon(args.query)
     if products is None:
         products = scrape_fakestore(args.query)
 
     if not products:
-        print(json.dumps({"error": "No products found"}), file=sys.stderr)
+        print(
+            json.dumps({"status": "error", "reason": "No products found"}),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Part 2: AI enhancement
     try:
         products = categorize_with_claude(products)
+        print(json.dumps({"status": "ok", "products": products}, indent=2))
     except Exception as e:
-        print(json.dumps({"error": str(e), "products": products}), file=sys.stderr)
-        sys.exit(1)
-
-    # Output final enhanced data as JSON
-    print(json.dumps(products, indent=2))
+        # Degraded: return products without categories rather than crashing
+        print(
+            json.dumps(
+                {"status": "degraded", "reason": str(e), "products": products}, indent=2
+            )
+        )
 
 
 if __name__ == "__main__":
