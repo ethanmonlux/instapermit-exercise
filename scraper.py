@@ -6,6 +6,7 @@ Scrapes products from Amazon (or fallback to FakeStore API), then categorizes vi
 
 import argparse
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -13,6 +14,12 @@ from typing import Any
 import requests
 from anthropic import Anthropic
 from pydantic import BaseModel, ValidationError
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class Product(BaseModel):
@@ -63,6 +70,7 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
 
     driver = None
     try:
+        logger.info("Attempting Amazon scrape: %s", url)
         driver = webdriver.Chrome(options=options)
         driver.get(url)
 
@@ -80,8 +88,21 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
         )[:5]
 
         if not cards:
-            # Maybe blocked or different layout
-            return None
+            logger.warning(
+                "Amazon: default selector found no cards — asking Claude for recovery selector"
+            )
+            recovered_selector = get_selector_from_claude(driver.page_source)
+            if recovered_selector:
+                try:
+                    cards = driver.find_elements(By.CSS_SELECTOR, recovered_selector)[
+                        :5
+                    ]
+                    logger.info("Recovery selector found %d cards", len(cards))
+                except Exception:
+                    logger.warning("Recovery selector failed")
+                    cards = []
+            if not cards:
+                return None
 
         for card in cards:
             product: dict[str, Any] = {
@@ -130,7 +151,10 @@ def scrape_amazon(query: str) -> list[dict[str, Any]] | None:
             or "captcha" in page_source
             or "enter the characters" in page_source
         ):
+            logger.warning("Amazon: bot detection triggered")
             return None
+
+        logger.info("Amazon: scraped %d products", len(products))
 
         return products if products else None
 
@@ -145,6 +169,7 @@ def scrape_fakestore(query: str) -> list[dict[str, Any]]:
     """
     Fallback: fetch first 5 products from FakeStore API via requests.
     """
+    logger.info("Using FakeStore API fallback")
     resp = requests.get("https://fakestoreapi.com/products", timeout=10)
     resp.raise_for_status()
     data = resp.json()
@@ -168,6 +193,123 @@ def scrape_fakestore(query: str) -> list[dict[str, Any]]:
     return products
 
 
+def scrape_books(query: str) -> list[dict[str, Any]] | None:
+    """
+    Secondary fallback: scrape books.toscrape.com using Selenium.
+    Built for scraper practice — never blocks.
+    Returns first 5 books as products.
+    """
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+    except ImportError:
+        return None
+
+    url = "https://books.toscrape.com"
+    products: list[dict[str, Any]] = []
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    driver = None
+    try:
+        logger.info("Attempting books.toscrape.com scrape")
+        driver = webdriver.Chrome(options=options)
+        driver.get(url)
+
+        wait = WebDriverWait(driver, 15)
+        wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "article.product_pod"))
+        )
+
+        cards = driver.find_elements(By.CSS_SELECTOR, "article.product_pod")[:5]
+
+        if not cards:
+            logger.warning("books.toscrape.com: no products found")
+            return None
+
+        for card in cards:
+            product: dict[str, Any] = {
+                "title": "",
+                "price": None,
+                "rating": None,
+                "url": "",
+            }
+            try:
+                title_el = card.find_elements(By.CSS_SELECTOR, "h3 a")
+                if title_el:
+                    product["title"] = title_el[0].get_attribute("title") or ""
+                    href = title_el[0].get_attribute("href") or ""
+                    product["url"] = href
+
+                price_el = card.find_elements(By.CSS_SELECTOR, ".price_color")
+                if price_el:
+                    product["price"] = price_el[0].text.strip()
+
+                rating_el = card.find_elements(By.CSS_SELECTOR, ".star-rating")
+                if rating_el:
+                    product["rating"] = (
+                        rating_el[0].get_attribute("class").replace("star-rating ", "")
+                    )
+
+                if product["title"]:
+                    products.append(product)
+
+            except Exception:
+                continue
+
+        logger.info("books.toscrape.com: scraped %d products", len(products))
+        return products if products else None
+
+    except Exception:
+        return None
+    finally:
+        if driver:
+            driver.quit()
+
+
+def get_selector_from_claude(page_source: str) -> str | None:
+    """
+    Ask Claude to find the CSS selector for product listings on a page.
+    Used as a recovery mechanism when the default selector returns no results.
+    Sends a truncated version of the page HTML to avoid token limits.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    # Truncate to first 15000 chars — enough structure without blowing context
+    truncated = page_source[:15000]
+
+    client = Anthropic(api_key=api_key)
+    prompt = f"""You are a web scraping expert. Look at this HTML and return ONLY a CSS selector
+that would find product listing cards on this page. Return the selector string only — no explanation,
+no markdown, no punctuation. If you cannot find product listings, return the word NONE.
+
+HTML:
+{truncated}"""
+
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=64,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        selector = message.content[0].text.strip()
+        if selector == "NONE" or not selector:
+            return None
+        logger.info("Claude suggested selector: %s", selector)
+        return selector
+    except Exception:
+        return None
+
+
 def categorize_with_claude(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Send product list to Claude API and add 'category' field to each.
@@ -177,6 +319,7 @@ def categorize_with_claude(products: list[dict[str, Any]]) -> list[dict[str, Any
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
+    logger.info("Calling Claude API for enhancement")
     client = Anthropic(api_key=api_key)
     products_json = json.dumps(products, indent=2)
 
@@ -235,11 +378,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Attempt Amazon twice before falling back
+    # Attempt Amazon twice, then books.toscrape.com, then FakeStore API
+    logger.info("Attempt 1: Amazon")
     products = scrape_amazon(args.query)
     if products is None:
+        logger.info("Attempt 2: Amazon")
         products = scrape_amazon(args.query)
     if products is None:
+        logger.info("Amazon failed — trying books.toscrape.com")
+        products = scrape_books(args.query)
+    if products is None:
+        logger.info("All Selenium attempts failed — falling back to FakeStore API")
         products = scrape_fakestore(args.query)
 
     if not products:
